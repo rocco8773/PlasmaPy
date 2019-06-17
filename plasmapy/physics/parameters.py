@@ -2,6 +2,9 @@
 This module gathers basic and general plasma parameters such as the
 plasma frequency or Debye length.
 """
+
+from typing import Optional
+
 __all__ = [
     "mass_density",
     "Alfven_speed",
@@ -22,13 +25,17 @@ __all__ = [
     "lower_hybrid_frequency",
 ]
 
+from astropy import units as u
+
+# from plasmapy.atomic import particle_mass, integer_charge
 import numbers
 import numpy as np
-
-from astropy import units as u
-from plasmapy import (atomic, utils)
+# import warnings
 from plasmapy.constants import (m_p, m_e, c, mu0, k_B, e, eps0, pi)
-from typing import Optional
+from plasmapy import atomic, utils
+
+from plasmapy.utils.exceptions import (PhysicsError)
+from plasmapy.atomic.exceptions import AtomicError
 
 
 def _grab_charge(ion, z_mean=None):

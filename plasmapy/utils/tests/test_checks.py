@@ -1,23 +1,17 @@
-"""
-Tests for 'check` decorators (i.e. decorators that only check values but do not
-change them).
-"""
+"""Tests for methods relating to quantities."""
+
 import numpy as np
+from astropy import units as u
 import pytest
 
-from astropy import units as u
-from plasmapy.constants import c
-from plasmapy.utils.decorators.checks import (
-    _check_quantity,
-    _check_relativistic,
-    check_quantity,
-    check_relativistic,
+from ...utils.exceptions import RelativityWarning, RelativityError
+from ...constants import c
+from ..checks import (
+    _check_quantity, _check_relativistic, check_relativistic,
+    check_quantity
 )
-from plasmapy.utils.exceptions import (RelativityWarning, RelativityError)
 
-# ----------------------------------------------------------------------------------------
-# Test Decorator `check_quantity` (& function `_check_quantity`
-# ----------------------------------------------------------------------------------------
+
 # (value, units, error)
 quantity_error_examples_default = [
     # exceptions associated with the units keyword
@@ -220,7 +214,7 @@ def test_check_quantity_decorator_two_args_one_kwargs_not_default():
         func(1 * u.m, 1 * u.s, z=np.inf * u.eV)
 
 
-class TestCheckQuantityNoneShallPass:
+class Test_check_quantity_none_shall_pass:
     @check_quantity(x={"units": u.m, "none_shall_pass": True})
     def func(self, x=None):
         if x is None:
@@ -235,9 +229,6 @@ class TestCheckQuantityNoneShallPass:
         assert self.func(None) == 0*u.m
 
 
-# ----------------------------------------------------------------------------------------
-# Test Decorator `check_relativistic` (& function `_check_relativistic`
-# ----------------------------------------------------------------------------------------
 # (speed, betafrac)
 non_relativistic_speed_examples = [
     (0 * u.m / u.s, 0.1),

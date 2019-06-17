@@ -1,5 +1,4 @@
 import astropy.units as u
-
 from astropy.units.utils import np
 from plasmapy import utils
 
