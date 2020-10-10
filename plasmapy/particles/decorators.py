@@ -13,7 +13,7 @@ import functools
 import inspect
 import numbers
 
-from typing import Any, Callable, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from plasmapy.particles.exceptions import (
     AtomicError,
@@ -77,6 +77,110 @@ def _category_errmsg(particle, require, exclude, any_of, funcname) -> str:
             )
 
     return category_errmsg
+
+
+def _search_annotations_for_particle(func: Callable) -> Dict[str, bool]:
+    """
+    Search through a function's annotations to find which arguments are typed
+    with `ParticleLike` or a subclass of
+    `~plasmapy.particles.particle_class.AbstractParticle`.
+
+    Parameters
+    ----------
+    func:
+        The function who's annotations will be examined.
+
+    Returns
+    -------
+    Dict[str, bool]
+        A dictionary where the keys are the names of the function parameters and
+        the associated values are `True` if the parameter was annotated with
+        `ParticleLike` or a subclass of
+        `~plasmapy.particles.particle_class.AbstractParticle`.
+
+    """
+    params = inspect.signature(func).parameters  # type: Mapping[str, inspect.Parameter]
+
+    def examine_args(args: tuple) -> bool:
+        """
+        Examine an annotations arguments for `Particlelike` typing.  In order
+
+        Parameters
+        ----------
+        args: tuple
+            A tuple of the annotation arguments.
+
+        Returns
+        -------
+        bool
+            `True` if (1) at least one argument is `ParticleLike` or a subclass
+            of `~plasmapy.particles.particle_class.AbstractParticle` and (2)
+            all arguments are a subclass of one the types making up
+            `ParticleLike` or an `Ellipsis` or `NoneType`.
+
+        """
+        status_list = []
+        for arg in args:
+            # check annotation argument at macro-level
+            if arg is ParticleLike:
+                isparlike = True
+            elif inspect.isclass(arg) and issubclass(arg, AbstractParticle):
+                isparlike = True
+            elif arg is Ellipsis:
+                status_list.append(True)
+                continue
+            else:
+                isparlike = False
+
+            if isparlike:
+                status_list.append(True)
+                continue
+
+            # examine annotation argument against those that make up ParticleLike
+            valids = list((*ParticleLike.__args__, type(None)))
+            valids.remove(AbstractParticle)
+            valids.remove(Particle)
+            for valid in valids:
+                try:
+                    isparlike = issubclass(arg, valid)
+                except TypeError:
+                    isparlike = False
+
+                if isparlike:
+                    break
+
+            status_list.append(isparlike)
+
+        return len(status_list) > 0 and all(status_list)
+
+    found = {}
+    for name, param in params.items():
+        annotation = param.annotation
+
+        # if annotated with list or tuple, then replace with Tuple or List
+        # respectively
+        if type(annotation) is tuple:
+            annotation = Tuple[annotation]
+        elif type(annotation) is list:
+            annotation = List[annotation]
+
+        # Let's look for a Particle annotation
+        if annotation is ParticleLike:
+            status = True
+        elif inspect.isclass(annotation) and issubclass(annotation, AbstractParticle):
+            status = True
+        elif hasattr(annotation, "__origin__"):
+            origin = annotation.__origin__
+            if origin == Union or origin is list or origin is tuple:
+                status = examine_args(annotation.__args__)
+            else:
+                status = False
+        else:
+            status = False
+
+        found[name] = status
+
+    return found
 
 
 def particle_input(
