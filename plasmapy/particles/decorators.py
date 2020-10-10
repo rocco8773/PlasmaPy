@@ -4,7 +4,10 @@ The decorator takes string and/or integer representations of particles
 as arguments and passes through the corresponding instance of the
 `~plasmapy.particles.Particle` class.
 """
-__all__ = ["particle_input"]
+__all__ = [
+    "particle_input",
+    "ParticleLike",
+]
 
 import functools
 import inspect
@@ -20,7 +23,11 @@ from plasmapy.particles.exceptions import (
     InvalidIsotopeError,
     InvalidParticleError,
 )
-from plasmapy.particles.particle_class import Particle
+from plasmapy.particles.particle_class import AbstractParticle, Particle
+from plasmapy.utils.decorators import preserve_signature
+
+
+ParticleLike = Union[str, int, numbers.Integral, Particle, AbstractParticle]
 
 
 def _particle_errmsg(
