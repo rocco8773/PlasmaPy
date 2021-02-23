@@ -101,6 +101,9 @@ def _search_annotations_for_particle(func: Callable) -> Dict[str, bool]:
     """
     params = inspect.signature(func).parameters  # type: Mapping[str, inspect.Parameter]
 
+    def measure_depth(annotations, depth=0):
+        pass
+
     def examine_args(args: tuple) -> bool:
         """
         Examine an annotations arguments for `Particlelike` typing.  In order
@@ -184,7 +187,7 @@ def _search_annotations_for_particle(func: Callable) -> Dict[str, bool]:
 
 
 def particle_input(
-    wrapped_function: Callable = None,
+    func: Callable = None,
     require: Union[str, Set, List, Tuple] = None,
     any_of: Union[str, Set, List, Tuple] = None,
     exclude: Union[str, Set, List, Tuple] = None,
@@ -204,7 +207,7 @@ def particle_input(
 
     Parameters
     ----------
-    wrapped_function : `callable`
+    func : `callable`
         The function or method to be decorated.
 
     require : `str`, `set`, `list`, or `tuple`, optional
@@ -352,180 +355,104 @@ def particle_input(
     if require is None:
         require = set()
 
-    def decorator(wrapped_function: Callable):
-        wrapped_signature = inspect.signature(wrapped_function)
+    def decorator(f: Callable):
+        signature = inspect.signature(f)
 
-        # add '__signature__' to methods that are copied from
-        # wrapped_function onto wrapper
-        assigned = list(functools.WRAPPER_ASSIGNMENTS)
-        assigned.append("__signature__")
-
-        @functools.wraps(wrapped_function, assigned=assigned)
+        @preserve_signature
+        @functools.wraps(f)
         def wrapper(*args, **kwargs):
-            annotations = wrapped_function.__annotations__
-            bound_args = wrapped_signature.bind(*args, **kwargs)
+            funcname = f.__name__
 
-            default_arguments = bound_args.signature.parameters
-            arguments = bound_args.arguments
-            argnames = bound_args.signature.parameters.keys()
+            # annotations = f.__annotations__
+            argnames = list(signature.parameters)
+            bound_args = signature.bind(*args, **kwargs)
+            bound_args.apply_defaults()
 
-            # Handle optional-only arguments in function declaration
-            for default_arg in default_arguments:
-                # The argument is not contained in `arguments` if the
-                # user does not explicitly pass an optional argument.
-                # In such cases, manually add it to `arguments` with
-                # the default value of parameter.
-                if default_arg not in arguments:
-                    arguments[default_arg] = default_arguments[default_arg].default
+            # search for parameters annotated as ParticleLike
+            args_w_par = _search_annotations_for_particle(f)
+            for name, isp in args_w_par.copy().items():
+                if not isp:
+                    del args_w_par[name]
 
-            funcname = wrapped_function.__name__
-
-            args_to_become_particles = []
-            for argname in annotations.keys():
-                if isinstance(annotations[argname], tuple):
-                    if argname == "return":
-                        continue
-                    annotated_argnames = annotations[argname]
-                    expected_params = len(annotated_argnames)
-                    received_params = len(arguments[argname])
-                    if not expected_params == received_params:
-                        raise ValueError(
-                            f"Number of parameters allowed in the tuple "
-                            f"({expected_params} parameters) are "
-                            f"not equal to number of parameters passed in "
-                            f"the tuple ({received_params} parameters)."
-                        )
-                elif isinstance(annotations[argname], list):
-                    annotated_argnames = annotations[argname]
-                    expected_params = len(annotated_argnames)
-                    if expected_params > 1:
-                        raise TypeError(
-                            f"Put in [Particle] as the annotation to "
-                            f"accept arbitrary number of Particle arguments."
-                        )
-                else:
-                    annotated_argnames = (annotations[argname],)
-
-                for annotated_argname in annotated_argnames:
-                    is_particle = (
-                        annotated_argname is Particle
-                        or annotated_argname is Optional[Particle]
-                    )
-                    if is_particle and argname != "return":
-                        args_to_become_particles.append(argname)
-
-            if not args_to_become_particles:
+            # some warnings
+            if len(args_w_par) == 0:
                 raise AtomicError(
-                    f"None of the arguments or keywords to {funcname} "
-                    f"have been annotated with Particle, as required "
-                    f"by the @particle_input decorator."
+                    f"None of the arguments or keywords to {funcname} have been "
+                    f"annotated with Particle or ParticleLike, as required by "
+                    f"the @particle_input decorator."
                 )
-            elif len(args_to_become_particles) > 1:
-                if "Z" in argnames or "mass_numb" in argnames:
-                    raise AtomicError(
-                        f"The arguments Z and mass_numb in {funcname} are not "
-                        f"allowed when more than one argument or keyword is "
-                        f"annotated with Particle in functions decorated "
-                        f"with @particle_input."
-                    )
+            elif len(args_w_par) > 1 and ("Z" in argnames or "mass_numb" in argnames):
+                raise AtomicError(
+                    f"The arguments Z and mass_numb in {funcname} are not "
+                    f"allowed when more than one argument or keyword is "
+                    f"annotated with Particle in functions decorated "
+                    f"with @particle_input."
+                )
+            else:
+                # If the number of arguments and keywords annotated with
+                # Particle is exactly one, then the Z and mass_numb keywords
+                # can be used without potential for ambiguity.
 
-            for x in args_to_become_particles:
-                if (
-                    annotations[x] is Particle
-                    and isinstance(arguments[x], (tuple, list))
-                    and len(arguments[x]) > 1
-                ):
-                    raise TypeError(
-                        f"You cannot pass a tuple or list containing "
-                        f"Particles when only single Particle was "
-                        f"expected, instead found {arguments[x]}. If you "
-                        f"intend to pass more than 1 Particle instance, "
-                        f"use a tuple or a list type. "
-                        f"That is use (Particle, Particle, ...) or "
-                        f"[Particle] in function declaration."
-                    )
+                Z = bound_args.arguments.get("Z", None)
+                mass_numb = bound_args.arguments.get("mass_numb", None)
 
-            # If the number of arguments and keywords annotated with
-            # Particle is exactly one, then the Z and mass_numb keywords
-            # can be used without potential for ambiguity.
+            # let's convert
+            for argname in args_w_par:
+                arg = bound_args.arguments[argname]
+                annotation = signature.parameters[argname].annotation
 
-            Z = arguments.get("Z", None)
-            mass_numb = arguments.get("mass_numb", None)
-
-            # Go through the argument names and check whether or not they are
-            # annotated with Particle.  If they aren't, include the name and
-            # value of the argument as an item in the new keyword arguments
-            # dictionary unchanged.  If they are annotated with Particle, then
-            # either convert the representation of a Particle to a Particle if
-            # it is not already a Particle and then do error checks.
-
-            new_kwargs = {}
-
-            for argname in argnames:
-                raw_argval = arguments[argname]
-                if isinstance(raw_argval, (tuple, list)):
-                    # Input argument value is a tuple or list
-                    # of correspoding particles or atomic values.
-                    argval_tuple = raw_argval
-                    particles = []
+                if hasattr(annotation, "__args__"):
+                    can_be_none = none_shall_pass or type(None) in annotation.__args__
                 else:
-                    # Otherwise convert it to tuple anyway so it can work
-                    # with loops too.
-                    argval_tuple = (raw_argval,)
+                    can_be_none = none_shall_pass
 
-                for pos, argval in enumerate(argval_tuple):
-                    should_be_particle = argname in args_to_become_particles
-                    already_particle = isinstance(argval, Particle)
+                # get the expected type
+                if hasattr(annotation, "__origin__") and annotation.__origin__ is list:
+                    expected_type = list
+                elif hasattr(annotation, "__origin__") \
+                        and annotation.__origin__ is tuple:
+                    expected_type = tuple
+                else:
+                    expected_type = ParticleLike.__args__
 
-                    # If the argument is not annotated with Particle, then we just
-                    # pass it through to the new keywords without doing anything.
+                # check we got the expected type
+                if not isinstance(arg, expected_type):
+                    raise TypeError(
+                        f"Got type {type(arg)} for argument {argname}, expected "
+                        f"type {expected_type}."
+                    )
 
-                    if not should_be_particle:
-                        new_kwargs[argname] = raw_argval
-                        continue
+                # convert to a particle class (if necessary)
+                if expected_type in (list, tuple):
+                    new_arg = []
 
-                    # Occasionally there will be functions where it will be
-                    # useful to allow None as an argument.
-
-                    # In case annotations[argname] is a collection (which looks
-                    # like (Particle, Optional[Particle], ...) or [Particle])
-                    if isinstance(annotations[argname], tuple):
-                        optional_particle = (
-                            annotations[argname][pos] is Optional[Particle]
+                    for val in arg:
+                        if val is None and can_be_none:
+                            pass
+                        elif not isinstance(val, AbstractParticle):
+                            val = get_particle(
+                                argname=argname,
+                                params=(val, Z, mass_numb),
+                                already_particle=False,
+                                funcname=funcname,
+                            )
+                        new_arg.append(val)
+                    new_arg = expected_type(new_arg)
+                else:
+                    if arg is None and can_be_none:
+                        new_arg = arg
+                    elif not isinstance(arg, AbstractParticle):
+                        new_arg = get_particle(
+                            argname=argname,
+                            params=(arg, Z, mass_numb),
+                            already_particle=False,
+                            funcname=funcname,
                         )
-                    elif isinstance(annotations[argname], list):
-                        optional_particle = annotations[argname] == [Optional[Particle]]
                     else:
-                        # Otherwise annotations[argname] must be a Particle itself
-                        optional_particle = annotations[argname] is Optional[Particle]
+                        new_arg = arg
+                bound_args.arguments[argname] = new_arg
 
-                    if (optional_particle or none_shall_pass) and argval is None:
-                        particle = None
-                    else:
-                        params = (argval, Z, mass_numb)
-                        particle = get_particle(
-                            argname, params, already_particle, funcname
-                        )
-
-                    if isinstance(raw_argval, (tuple, list)):
-                        # If passed argument is a tuple or list, keep
-                        # appending them.
-                        particles.append(particle)
-                        # Set appended values if current iteration is the
-                        # last iteration.
-                        if (pos + 1) == len(argval_tuple):
-                            new_kwargs[argname] = tuple(particles)
-                            del particles
-                    else:
-                        # Otherwise directly set values
-                        new_kwargs[argname] = particle
-
-            return wrapped_function(**new_kwargs)
-
-        # add '__signature__' if it does not exist
-        # - this will preserve parameter hints in IDE's
-        if not hasattr(wrapper, "__signature__"):
-            wrapper.__signature__ = inspect.signature(wrapped_function)
+            return f(*bound_args.args, **bound_args.kwargs)
 
         return wrapper
 
@@ -610,7 +537,7 @@ def particle_input(
     # as `@particle_input` or as `@particle_input()`, where the latter
     # call allows the decorator to have keyword arguments.
 
-    if wrapped_function is not None:
-        return decorator(wrapped_function)
+    if func is not None:
+        return decorator(func)
     else:
         return decorator
