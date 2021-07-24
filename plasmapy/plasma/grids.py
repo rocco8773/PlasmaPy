@@ -1247,6 +1247,174 @@ class CartesianGrid(AbstractGrid):
         else:
             return tuple(output)
 
+    def vai2(
+        self, pos: Union[np.ndarray, u.Quantity], *args, persistent=False
+    ):
+        if isinstance(pos, u.Quantity):
+            pos = pos.to(u.m).value
+        elif self.unit != u.m:
+            pos *= self.unit.to(u.m).value
+
+        # If a single point was given, add empty dimension
+        if pos.ndim == 1:
+            pos = np.reshape(pos, [1, 3])
+
+        # -- Validate args --
+        # must be np.ndarray or u.Quantity arrays of same shape as grid
+        for arg in args:
+            if arg not in self.quantities:
+                raise KeyError(
+                    "Quantity arguments must correspond to "
+                    "DataArrays in the DataSet. "
+                    f"{arg} was not found. "
+                    f"Existing keys are: {self.quantities}"
+                )
+
+        # If persistent, double check the arguments list hasn't changed
+        # If they have, run as non-persistent this time
+        if persistent and args != self._interp_args:
+            persistent = False
+
+        # Update _interp_args variable
+        self._interp_args = args
+
+        # If not persistent, clear the cached properties so they are re-created
+        # when called below
+        if not persistent:
+            try:
+                del self._interp_quantities
+            except AttributeError:
+                pass
+            try:
+                del self._interp_units
+            except AttributeError:
+                pass
+
+        # -- begin averaging --
+
+        nparticles = pos.shape[0]
+        nargs = len(args)
+
+        # Load grid attributes (so this isn't repeated)
+        ax0, ax1, ax2 = (
+            self.ax0.to(u.m).value,
+            self.ax1.to(u.m).value,
+            self.ax2.to(u.m).value,
+        )
+        dx, dy, dz = (
+            self.dax0.to(u.m).value,
+            self.dax1.to(u.m).value,
+            self.dax2.to(u.m).value,
+        )
+        n0, n1, n2 = self.shape
+
+        # find cell nearest to particle
+        nearest_neighbor_index = np.zeros((nparticles, 3), dtype=np.int32)
+        nearest_neighbor_index[..., 0] = np.abs(pos[:, 0, None] - ax0).argmin(axis=1)
+        nearest_neighbor_index[..., 1] = np.abs(pos[:, 1, None] - ax1).argmin(axis=1)
+        nearest_neighbor_index[..., 2] = np.abs(pos[:, 2, None] - ax2).argmin(axis=1)
+
+        # What particles are off the grid?
+        mask_particle_off = (
+            (pos[:, 0] < ax0.min() - 0.5 * dx)
+            | (pos[:, 0] > ax0.max() + 0.5 * dx)
+            | (pos[:, 1] < ax1.min() - 0.5 * dy)
+            | (pos[:, 1] > ax1.max() + 0.5 * dy)
+            | (pos[:, 2] < ax2.min() - 0.5 * dz)
+            | (pos[:, 2] > ax2.max() + 0.5 * dz)
+        )
+
+        # Get the physical positions for the nearest neighbor cell
+        # for the each particle
+        xpos = ax0[nearest_neighbor_index[:, 0]]
+        ypos = ax1[nearest_neighbor_index[:, 1]]
+        zpos = ax2[nearest_neighbor_index[:, 2]]
+        nearest_neighbor_pos = np.array([xpos, ypos, zpos]).swapaxes(0, 1)
+
+        # Determine the indices for the grid cells bounding the particle
+        # - The imaginary cell centered on the particle will overlap with
+        #   1 to 8 surrounding cells
+        # - typically this is 8 but will be 4, 2, or 1 when the particle is
+        #   near the boundary of the grid
+        bounding_cell_indices = np.empty((nparticles, 8, 3), dtype=np.int32)
+        lower_indices = np.where(
+            pos >= nearest_neighbor_pos,
+            nearest_neighbor_index,
+            nearest_neighbor_index - 1,
+        )
+
+        # populate x indices
+        bounding_cell_indices[:, 0:4, 0] = np.tile(
+            lower_indices[:, 0], (4, 1)
+        ).swapaxes(0, 1)
+        bounding_cell_indices[:, 4:, 0] = bounding_cell_indices[:, 0:4, 0] + 1
+
+        # populate y indices
+        bounding_cell_indices[:, [0, 1, 4, 5], 1] = np.tile(
+            lower_indices[:, 1], (4, 1)
+        ).swapaxes(0, 1)
+        bounding_cell_indices[:, [2, 3, 6, 7], 1] = \
+            bounding_cell_indices[:, [0, 1, 4, 5], 1] + 1
+
+        # populate z indices
+        bounding_cell_indices[:, 0::2, 2] = np.tile(
+            lower_indices[:, 2], (4, 1)
+        ).swapaxes(0, 1)
+        bounding_cell_indices[:, 1::2, 2] = bounding_cell_indices[:, 0::2, 2] + 1
+
+        # create off the grid mask
+        mask_cell_off = (
+            (bounding_cell_indices < 0).any(axis=2)
+            | (bounding_cell_indices[:, :, 0] >= n0)
+            | (bounding_cell_indices[:, :, 1] >= n1)
+            | (bounding_cell_indices[:, :, 2] >= n2)
+        )
+
+        # Zero any out of bounds indices so IndexError is not raised
+        # during indexing.  This means an incorrect value will be retrieved
+        # but will not be used because of the zero weighting and the
+        # off the grid mask
+        bounding_cell_indices[mask_cell_off, :] = 0
+
+        lx = dx - np.abs(
+            pos[:, None, 0] - ax0[bounding_cell_indices[..., 0]]
+        )
+        ly = dy - np.abs(
+            pos[:, None, 1] - ax1[bounding_cell_indices[..., 1]]
+        )
+        lz = dz - np.abs(
+            pos[:, None, 2] - ax2[bounding_cell_indices[..., 2]]
+        )
+        bounding_cell_weights = lx * ly * lz
+        bounding_cell_weights[mask_cell_off] = 0.0
+        bounding_cell_weights[mask_particle_off, ...] = 0.0
+        norms = np.sum(bounding_cell_weights, axis=1)
+        mask_norm_zero = norms == 0.0
+        bounding_cell_weights[~mask_norm_zero] = (
+            bounding_cell_weights[~mask_norm_zero, ...] / norms[~mask_norm_zero, None]
+        )
+
+        vals = self._interp_quantities[
+            bounding_cell_indices[..., 0],
+            bounding_cell_indices[..., 1],
+            bounding_cell_indices[..., 2],
+            :
+        ]
+        weighted_ave = np.sum(bounding_cell_weights[..., None] * vals, axis=1)
+
+        # Split output array into arrays with units
+        # Apply units to output arrays
+        output = []
+        for arg in range(nargs):
+            output.append(
+                weighted_ave[..., arg] * self._interp_units[arg]
+            )
+
+        if len(output) == 1:
+            return output[0]
+        else:
+            return tuple(output)
+
 
 class NonUniformCartesianGrid(AbstractGrid):
     r"""
