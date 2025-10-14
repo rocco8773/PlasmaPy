@@ -3,6 +3,7 @@ Tests for grids.py
 """
 
 import astropy.units as u
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from astropy.tests.helper import assert_quantity_allclose
@@ -513,7 +514,7 @@ def uniform_cartesian_grid():
         0.1 * u.cm,
     ],
 )
-def test_soften_edges(uniform_cartesian_grid, width):
+def test_soften_edges(uniform_cartesian_grid, width) -> None:
     grid = uniform_cartesian_grid
 
     # Find the approximate center of the grid
@@ -1010,7 +1011,6 @@ def debug_volume_avg_interpolator() -> None:
     Plot the comparison of the nearest neighbor interpolator and volume
     averaged interpolator for `~plasmapy.plasma.grids.CartesianGrid`.
     """
-    import matplotlib.pyplot as plt
 
     grid = grids.CartesianGrid(-1 * u.cm, 1 * u.cm, num=24)
 
